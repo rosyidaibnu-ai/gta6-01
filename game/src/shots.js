@@ -1,79 +1,85 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The screenshot scenes behind ?shot=start|onfoot|chase|mission. Each one plays
+// the real rules forward from a fresh world for a fixed number of steps, steered
+// by a simple autopilot (walk or drive toward the mission target), so the frame
+// is what a short game really looks like and the same seed always gives the
+// same frame. Nothing is drawn by hand: the scenes are the game itself.
+import { STEP } from './config.js';
+import { SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+const IDLE = { move: { x: 0, y: 0 }, actions: 0, mouseDown: false };
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
+function stepFor(world, seconds, input) {
+  const state = world.state;
+  for (let i = 0; i < seconds / STEP; i += 1) {
+    world.step(STEP, input);
+    state.dialog = null;
   }
-  return Infinity;
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+/** Drive or walk toward a point, in world coordinates. */
+function moveToward(state, tx, ty) {
+  const dx = tx - state.player.x;
+  const dy = ty - state.player.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return { move: { x: dx / len, y: dy / len }, actions: 0, mouseDown: false };
 }
 
 /**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
+ * Set `world` to the named scene and return the screen to draw over it and the
+ * best money to show. Unknown names stage the title scene.
  */
 export function stageShot(name, world) {
+  const state = world.state;
   world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+  if (name === 'onfoot') {
+    // Mission one, on foot near the cafe, with the city alive around the player.
+    // The player starts far enough out that the mission is still in progress.
+    world.startMission(0);
+    state.player.x = 500;
+    state.player.y = 1000;
+    state.dialog = null;
+    for (let i = 0; i < 1.2 / STEP; i += 1) {
+      world.step(STEP, moveToward(state, 940, 700));
+      state.dialog = null;
+    }
+    return { screen: SCREEN_PLAY, best: 120 };
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+  if (name === 'chase') {
+    // Four stars, a stolen sports car, police behind and a helicopter above.
+    // Mission five is active: get chased, then lose them.
+    world.startMission(4);
+    const sport = state.cars.find((c) => c.kind === 'sport');
+    sport.x = 1600;
+    sport.y = 2000;
+    sport.angle = -Math.PI / 2;
+    sport.speed = 380;
+    sport.parked = false;
+    sport.playerOwned = true;
+    state.player.inCar = sport.id;
+    state.player.x = sport.x;
+    state.player.y = sport.y;
+    state.wanted.stars = 4;
+    state.wanted.hideTimer = 0;
+    state.dialog = null;
+    for (let i = 0; i < 2.5 / STEP; i += 1) {
+      world.step(STEP, { move: { x: 0, y: -1 }, actions: 0, mouseDown: false });
+      state.dialog = null;
+    }
+    return { screen: SCREEN_PLAY, best: 120 };
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  if (name === 'mission') {
+    // Mission three: the red sports car is the target, the player closes in.
+    world.startMission(2);
+    state.player.x = 2320;
+    state.player.y = 560;
+    state.dialog = null;
+    for (let i = 0; i < 2.5 / STEP; i += 1) {
+      world.step(STEP, moveToward(state, 2500, 430));
+      state.dialog = null;
+    }
+    return { screen: SCREEN_PLAY, best: 120 };
+  }
+  // Title: five seconds of the city living behind the menu.
+  stepFor(world, 5, IDLE);
+  return { screen: SCREEN_TITLE, best: 120 };
 }
